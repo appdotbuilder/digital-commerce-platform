@@ -1,31 +1,60 @@
+import { db } from '../db';
+import { couponsTable, ordersTable } from '../db/schema';
 import { type CreateCouponInput, type UpdateCouponInput, type Coupon } from '../schema';
+import { eq, and, isNull, or, gt, desc, lte, sql } from 'drizzle-orm';
+import type { SQL } from 'drizzle-orm';
 
 /**
  * Handler for creating a new discount coupon
  * This handler creates a new coupon with validation rules
  */
 export async function createCoupon(input: CreateCouponInput): Promise<Coupon> {
-  // Placeholder implementation
-  // Real implementation should:
-  // 1. Validate input data
-  // 2. Check if coupon code is unique
-  // 3. Validate discount value based on type
-  // 4. Insert coupon into database
-  // 5. Return created coupon
-  return {
-    id: 1,
-    code: input.code,
-    description: input.description,
-    discount_type: input.discount_type,
-    discount_value: input.discount_value,
-    minimum_order: input.minimum_order,
-    usage_limit: input.usage_limit,
-    used_count: 0,
-    expires_at: input.expires_at,
-    is_active: true,
-    created_at: new Date(),
-    updated_at: new Date()
-  };
+  try {
+    // Check if coupon code already exists
+    const existingCoupon = await db.select()
+      .from(couponsTable)
+      .where(eq(couponsTable.code, input.code))
+      .limit(1)
+      .execute();
+
+    if (existingCoupon.length > 0) {
+      throw new Error('Coupon code already exists');
+    }
+
+    // Validate discount value based on type
+    if (input.discount_type === 'percentage' && input.discount_value > 100) {
+      throw new Error('Percentage discount cannot exceed 100%');
+    }
+
+    if (input.discount_value <= 0) {
+      throw new Error('Discount value must be greater than 0');
+    }
+
+    // Insert coupon into database
+    const result = await db.insert(couponsTable)
+      .values({
+        code: input.code,
+        description: input.description,
+        discount_type: input.discount_type,
+        discount_value: input.discount_value.toString(),
+        minimum_order: input.minimum_order ? input.minimum_order.toString() : null,
+        usage_limit: input.usage_limit,
+        expires_at: input.expires_at
+      })
+      .returning()
+      .execute();
+
+    // Convert numeric fields back to numbers before returning
+    const coupon = result[0];
+    return {
+      ...coupon,
+      discount_value: parseFloat(coupon.discount_value),
+      minimum_order: coupon.minimum_order ? parseFloat(coupon.minimum_order) : null
+    };
+  } catch (error) {
+    console.error('Coupon creation failed:', error);
+    throw error;
+  }
 }
 
 /**
@@ -33,12 +62,21 @@ export async function createCoupon(input: CreateCouponInput): Promise<Coupon> {
  * This handler retrieves all coupons for admin management
  */
 export async function getCoupons(): Promise<Coupon[]> {
-  // Placeholder implementation
-  // Real implementation should:
-  // 1. Query all coupons from database
-  // 2. Order by created_at desc
-  // 3. Return coupon list
-  return [];
+  try {
+    const results = await db.select()
+      .from(couponsTable)
+      .orderBy(desc(couponsTable.created_at))
+      .execute();
+
+    return results.map(coupon => ({
+      ...coupon,
+      discount_value: parseFloat(coupon.discount_value),
+      minimum_order: coupon.minimum_order ? parseFloat(coupon.minimum_order) : null
+    }));
+  } catch (error) {
+    console.error('Failed to fetch coupons:', error);
+    throw error;
+  }
 }
 
 /**
@@ -46,13 +84,44 @@ export async function getCoupons(): Promise<Coupon[]> {
  * This handler retrieves only active and non-expired coupons
  */
 export async function getActiveCoupons(): Promise<Coupon[]> {
-  // Placeholder implementation
-  // Real implementation should:
-  // 1. Query coupons where is_active = true
-  // 2. Filter out expired coupons
-  // 3. Check usage limits
-  // 4. Return available coupons
-  return [];
+  try {
+    const now = new Date();
+    
+    const conditions: SQL<unknown>[] = [
+      eq(couponsTable.is_active, true)
+    ];
+
+    // Add expiration check - coupon is valid if expires_at is null OR expires_at > now
+    const expirationCondition = or(
+      isNull(couponsTable.expires_at),
+      gt(couponsTable.expires_at, now)
+    );
+    
+    if (expirationCondition) {
+      conditions.push(expirationCondition);
+    }
+
+    const results = await db.select()
+      .from(couponsTable)
+      .where(and(...conditions))
+      .orderBy(desc(couponsTable.created_at))
+      .execute();
+
+    // Filter out coupons that have reached usage limit
+    const availableCoupons = results.filter(coupon => {
+      if (coupon.usage_limit === null) return true;
+      return coupon.used_count < coupon.usage_limit;
+    });
+
+    return availableCoupons.map(coupon => ({
+      ...coupon,
+      discount_value: parseFloat(coupon.discount_value),
+      minimum_order: coupon.minimum_order ? parseFloat(coupon.minimum_order) : null
+    }));
+  } catch (error) {
+    console.error('Failed to fetch active coupons:', error);
+    throw error;
+  }
 }
 
 /**
@@ -60,18 +129,68 @@ export async function getActiveCoupons(): Promise<Coupon[]> {
  * This handler checks if a coupon code is valid for use
  */
 export async function validateCoupon(code: string, orderTotal: number): Promise<{ isValid: boolean, coupon?: Coupon, discount?: number, error?: string }> {
-  // Placeholder implementation
-  // Real implementation should:
-  // 1. Find coupon by code
-  // 2. Check if active and not expired
-  // 3. Check usage limits
-  // 4. Validate minimum order amount
-  // 5. Calculate discount amount
-  // 6. Return validation result
-  return {
-    isValid: false,
-    error: 'Coupon not found'
-  };
+  try {
+    // Find coupon by code
+    const results = await db.select()
+      .from(couponsTable)
+      .where(eq(couponsTable.code, code))
+      .limit(1)
+      .execute();
+
+    if (results.length === 0) {
+      return { isValid: false, error: 'Coupon not found' };
+    }
+
+    const couponData = results[0];
+    const coupon: Coupon = {
+      ...couponData,
+      discount_value: parseFloat(couponData.discount_value),
+      minimum_order: couponData.minimum_order ? parseFloat(couponData.minimum_order) : null
+    };
+
+    // Check if coupon is active
+    if (!coupon.is_active) {
+      return { isValid: false, error: 'Coupon is not active' };
+    }
+
+    // Check if coupon is expired
+    if (coupon.expires_at && new Date() > coupon.expires_at) {
+      return { isValid: false, error: 'Coupon has expired' };
+    }
+
+    // Check usage limits
+    if (coupon.usage_limit !== null && coupon.used_count >= coupon.usage_limit) {
+      return { isValid: false, error: 'Coupon usage limit reached' };
+    }
+
+    // Check minimum order amount
+    if (coupon.minimum_order !== null && orderTotal < coupon.minimum_order) {
+      return { 
+        isValid: false, 
+        error: `Minimum order amount of $${coupon.minimum_order.toFixed(2)} required` 
+      };
+    }
+
+    // Calculate discount amount
+    let discount: number;
+    if (coupon.discount_type === 'percentage') {
+      discount = (orderTotal * coupon.discount_value) / 100;
+    } else {
+      discount = coupon.discount_value;
+    }
+
+    // Ensure discount doesn't exceed order total
+    discount = Math.min(discount, orderTotal);
+
+    return {
+      isValid: true,
+      coupon,
+      discount
+    };
+  } catch (error) {
+    console.error('Coupon validation failed:', error);
+    return { isValid: false, error: 'Validation failed' };
+  }
 }
 
 /**
@@ -79,16 +198,55 @@ export async function validateCoupon(code: string, orderTotal: number): Promise<
  * This handler applies a coupon and updates usage count
  */
 export async function applyCoupon(code: string, orderId: number): Promise<{ success: boolean, discount?: number, error?: string }> {
-  // Placeholder implementation
-  // Real implementation should:
-  // 1. Validate coupon for the order
-  // 2. Update coupon usage count
-  // 3. Update order with coupon ID and discount
-  // 4. Return application result
-  return {
-    success: false,
-    error: 'Coupon application failed'
-  };
+  try {
+    // Get the order to validate total amount
+    const orderResults = await db.select()
+      .from(ordersTable)
+      .where(eq(ordersTable.id, orderId))
+      .limit(1)
+      .execute();
+
+    if (orderResults.length === 0) {
+      return { success: false, error: 'Order not found' };
+    }
+
+    const order = orderResults[0];
+    const orderTotal = parseFloat(order.subtotal);
+
+    // Validate the coupon
+    const validation = await validateCoupon(code, orderTotal);
+    if (!validation.isValid || !validation.coupon || validation.discount === undefined) {
+      return { success: false, error: validation.error };
+    }
+
+    // Update coupon usage count
+    await db.update(couponsTable)
+      .set({ 
+        used_count: validation.coupon.used_count + 1,
+        updated_at: new Date()
+      })
+      .where(eq(couponsTable.id, validation.coupon.id))
+      .execute();
+
+    // Update order with coupon ID and discount
+    await db.update(ordersTable)
+      .set({
+        coupon_id: validation.coupon.id,
+        discount_amount: validation.discount.toString(),
+        total_amount: (orderTotal - validation.discount).toString(),
+        updated_at: new Date()
+      })
+      .where(eq(ordersTable.id, orderId))
+      .execute();
+
+    return {
+      success: true,
+      discount: validation.discount
+    };
+  } catch (error) {
+    console.error('Coupon application failed:', error);
+    return { success: false, error: 'Application failed' };
+  }
 }
 
 /**
@@ -96,11 +254,27 @@ export async function applyCoupon(code: string, orderId: number): Promise<{ succ
  * This handler retrieves a specific coupon by its ID
  */
 export async function getCouponById(id: number): Promise<Coupon | null> {
-  // Placeholder implementation
-  // Real implementation should:
-  // 1. Query coupon by ID
-  // 2. Return coupon or null if not found
-  return null;
+  try {
+    const results = await db.select()
+      .from(couponsTable)
+      .where(eq(couponsTable.id, id))
+      .limit(1)
+      .execute();
+
+    if (results.length === 0) {
+      return null;
+    }
+
+    const coupon = results[0];
+    return {
+      ...coupon,
+      discount_value: parseFloat(coupon.discount_value),
+      minimum_order: coupon.minimum_order ? parseFloat(coupon.minimum_order) : null
+    };
+  } catch (error) {
+    console.error('Failed to fetch coupon by ID:', error);
+    throw error;
+  }
 }
 
 /**
@@ -108,14 +282,80 @@ export async function getCouponById(id: number): Promise<Coupon | null> {
  * This handler updates an existing coupon with new data
  */
 export async function updateCoupon(input: UpdateCouponInput): Promise<Coupon | null> {
-  // Placeholder implementation
-  // Real implementation should:
-  // 1. Validate input data
-  // 2. Check if coupon exists
-  // 3. Validate new code uniqueness if changed
-  // 4. Update coupon in database
-  // 5. Return updated coupon or null if not found
-  return null;
+  try {
+    // Check if coupon exists
+    const existingResults = await db.select()
+      .from(couponsTable)
+      .where(eq(couponsTable.id, input.id))
+      .limit(1)
+      .execute();
+
+    if (existingResults.length === 0) {
+      return null;
+    }
+
+    // If code is being changed, check for uniqueness
+    if (input.code) {
+      const codeCheckResults = await db.select()
+        .from(couponsTable)
+        .where(and(
+          eq(couponsTable.code, input.code),
+          gt(couponsTable.id, 0) // Ensure we're not comparing with itself
+        ))
+        .execute();
+
+      const existingWithSameCode = codeCheckResults.filter(c => c.id !== input.id);
+      if (existingWithSameCode.length > 0) {
+        throw new Error('Coupon code already exists');
+      }
+    }
+
+    // Validate discount value if provided
+    if (input.discount_value !== undefined) {
+      if (input.discount_type === 'percentage' && input.discount_value > 100) {
+        throw new Error('Percentage discount cannot exceed 100%');
+      }
+      if (input.discount_value <= 0) {
+        throw new Error('Discount value must be greater than 0');
+      }
+    }
+
+    // Prepare update data
+    const updateData: any = {
+      updated_at: new Date()
+    };
+
+    if (input.code !== undefined) updateData.code = input.code;
+    if (input.description !== undefined) updateData.description = input.description;
+    if (input.discount_type !== undefined) updateData.discount_type = input.discount_type;
+    if (input.discount_value !== undefined) updateData.discount_value = input.discount_value.toString();
+    if (input.minimum_order !== undefined) updateData.minimum_order = input.minimum_order ? input.minimum_order.toString() : null;
+    if (input.usage_limit !== undefined) updateData.usage_limit = input.usage_limit;
+    if (input.expires_at !== undefined) updateData.expires_at = input.expires_at;
+    if (input.is_active !== undefined) updateData.is_active = input.is_active;
+
+    // Update coupon in database
+    const results = await db.update(couponsTable)
+      .set(updateData)
+      .where(eq(couponsTable.id, input.id))
+      .returning()
+      .execute();
+
+    if (results.length === 0) {
+      return null;
+    }
+
+    // Convert numeric fields back to numbers before returning
+    const coupon = results[0];
+    return {
+      ...coupon,
+      discount_value: parseFloat(coupon.discount_value),
+      minimum_order: coupon.minimum_order ? parseFloat(coupon.minimum_order) : null
+    };
+  } catch (error) {
+    console.error('Coupon update failed:', error);
+    throw error;
+  }
 }
 
 /**
@@ -123,11 +363,44 @@ export async function updateCoupon(input: UpdateCouponInput): Promise<Coupon | n
  * This handler removes a coupon from the database
  */
 export async function deleteCoupon(id: number): Promise<boolean> {
-  // Placeholder implementation
-  // Real implementation should:
-  // 1. Check if coupon exists
-  // 2. Check if coupon has been used in orders
-  // 3. Either soft delete or prevent deletion
-  // 4. Return true if deleted, false otherwise
-  return false;
+  try {
+    // Check if coupon exists
+    const existingResults = await db.select()
+      .from(couponsTable)
+      .where(eq(couponsTable.id, id))
+      .limit(1)
+      .execute();
+
+    if (existingResults.length === 0) {
+      return false;
+    }
+
+    // Check if coupon has been used in orders
+    const orderResults = await db.select()
+      .from(ordersTable)
+      .where(eq(ordersTable.coupon_id, id))
+      .limit(1)
+      .execute();
+
+    if (orderResults.length > 0) {
+      // If coupon has been used, soft delete by deactivating
+      await db.update(couponsTable)
+        .set({ 
+          is_active: false,
+          updated_at: new Date()
+        })
+        .where(eq(couponsTable.id, id))
+        .execute();
+    } else {
+      // If not used, hard delete
+      await db.delete(couponsTable)
+        .where(eq(couponsTable.id, id))
+        .execute();
+    }
+
+    return true;
+  } catch (error) {
+    console.error('Coupon deletion failed:', error);
+    throw error;
+  }
 }

@@ -1,16 +1,24 @@
+import { db } from '../db';
+import { settingsTable } from '../db/schema';
 import { type UpdateSettingInput, type Setting } from '../schema';
+import { eq, asc } from 'drizzle-orm';
 
 /**
  * Handler for getting all system settings
  * This handler retrieves all configuration settings
  */
 export async function getSettings(): Promise<Setting[]> {
-  // Placeholder implementation
-  // Real implementation should:
-  // 1. Query all settings from database
-  // 2. Order by key name
-  // 3. Return settings array
-  return [];
+  try {
+    const results = await db.select()
+      .from(settingsTable)
+      .orderBy(asc(settingsTable.key))
+      .execute();
+
+    return results;
+  } catch (error) {
+    console.error('Failed to get settings:', error);
+    throw error;
+  }
 }
 
 /**
@@ -18,11 +26,18 @@ export async function getSettings(): Promise<Setting[]> {
  * This handler retrieves a single setting value
  */
 export async function getSettingByKey(key: string): Promise<Setting | null> {
-  // Placeholder implementation
-  // Real implementation should:
-  // 1. Query setting by key
-  // 2. Return setting or null if not found
-  return null;
+  try {
+    const results = await db.select()
+      .from(settingsTable)
+      .where(eq(settingsTable.key, key))
+      .limit(1)
+      .execute();
+
+    return results.length > 0 ? results[0] : null;
+  } catch (error) {
+    console.error('Failed to get setting by key:', error);
+    throw error;
+  }
 }
 
 /**
@@ -30,20 +45,39 @@ export async function getSettingByKey(key: string): Promise<Setting | null> {
  * This handler updates existing setting or creates new one
  */
 export async function updateSetting(input: UpdateSettingInput): Promise<Setting> {
-  // Placeholder implementation
-  // Real implementation should:
-  // 1. Check if setting exists
-  // 2. Update existing or create new setting
-  // 3. Validate setting value format if needed
-  // 4. Return updated/created setting
-  return {
-    id: 1,
-    key: input.key,
-    value: input.value,
-    description: null,
-    created_at: new Date(),
-    updated_at: new Date()
-  };
+  try {
+    // First, try to find existing setting
+    const existing = await getSettingByKey(input.key);
+
+    if (existing) {
+      // Update existing setting
+      const results = await db.update(settingsTable)
+        .set({
+          value: input.value,
+          updated_at: new Date()
+        })
+        .where(eq(settingsTable.key, input.key))
+        .returning()
+        .execute();
+
+      return results[0];
+    } else {
+      // Create new setting
+      const results = await db.insert(settingsTable)
+        .values({
+          key: input.key,
+          value: input.value,
+          description: null
+        })
+        .returning()
+        .execute();
+
+      return results[0];
+    }
+  } catch (error) {
+    console.error('Failed to update setting:', error);
+    throw error;
+  }
 }
 
 /**
@@ -51,12 +85,20 @@ export async function updateSetting(input: UpdateSettingInput): Promise<Setting>
  * This handler batch updates multiple settings
  */
 export async function updateMultipleSettings(settings: UpdateSettingInput[]): Promise<Setting[]> {
-  // Placeholder implementation
-  // Real implementation should:
-  // 1. Validate all settings
-  // 2. Update settings in transaction
-  // 3. Return updated settings
-  return [];
+  try {
+    const results: Setting[] = [];
+    
+    // Process each setting (could be optimized with batch operations)
+    for (const settingInput of settings) {
+      const updatedSetting = await updateSetting(settingInput);
+      results.push(updatedSetting);
+    }
+
+    return results;
+  } catch (error) {
+    console.error('Failed to update multiple settings:', error);
+    throw error;
+  }
 }
 
 /**
@@ -64,13 +106,28 @@ export async function updateMultipleSettings(settings: UpdateSettingInput[]): Pr
  * This handler removes a setting from the database
  */
 export async function deleteSetting(key: string): Promise<boolean> {
-  // Placeholder implementation
-  // Real implementation should:
-  // 1. Check if setting exists
-  // 2. Prevent deletion of critical settings
-  // 3. Delete setting from database
-  // 4. Return success status
-  return false;
+  try {
+    // Define critical settings that cannot be deleted
+    const criticalSettings = [
+      'admin_email',
+      'site_name',
+      'currency'
+    ];
+
+    if (criticalSettings.includes(key)) {
+      return false; // Cannot delete critical settings
+    }
+
+    const results = await db.delete(settingsTable)
+      .where(eq(settingsTable.key, key))
+      .returning()
+      .execute();
+
+    return results.length > 0;
+  } catch (error) {
+    console.error('Failed to delete setting:', error);
+    throw error;
+  }
 }
 
 /**
@@ -78,13 +135,6 @@ export async function deleteSetting(key: string): Promise<boolean> {
  * This handler returns default settings for system initialization
  */
 export async function getDefaultSettings(): Promise<UpdateSettingInput[]> {
-  // Placeholder implementation
-  // Real implementation should return default settings like:
-  // - Site name, description, email
-  // - Payment gateway settings
-  // - Tax rates, currency
-  // - Email templates
-  // - Security settings
   return [
     { key: 'site_name', value: 'Digital Store' },
     { key: 'site_description', value: 'Your digital products marketplace' },
@@ -111,13 +161,19 @@ export async function getDefaultSettings(): Promise<UpdateSettingInput[]> {
  * This handler creates default settings if they don't exist
  */
 export async function initializeDefaultSettings(): Promise<void> {
-  // Placeholder implementation
-  // Real implementation should:
-  // 1. Get default settings
-  // 2. Check which settings don't exist
-  // 3. Create missing default settings
-  // 4. Skip existing settings
-  return;
+  try {
+    const defaultSettings = await getDefaultSettings();
+    
+    for (const setting of defaultSettings) {
+      const existing = await getSettingByKey(setting.key);
+      if (!existing) {
+        await updateSetting(setting);
+      }
+    }
+  } catch (error) {
+    console.error('Failed to initialize default settings:', error);
+    throw error;
+  }
 }
 
 /**
@@ -125,11 +181,6 @@ export async function initializeDefaultSettings(): Promise<void> {
  * This handler validates setting values based on key type
  */
 export async function validateSettingValue(key: string, value: string): Promise<{ isValid: boolean; error?: string }> {
-  // Placeholder implementation
-  // Real implementation should:
-  // 1. Define validation rules for different setting types
-  // 2. Validate email formats, numeric values, URLs, etc.
-  // 3. Return validation result
   const validationRules: { [key: string]: (value: string) => boolean } = {
     admin_email: (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v),
     tax_rate: (v) => !isNaN(Number(v)) && Number(v) >= 0 && Number(v) <= 100,
@@ -163,18 +214,38 @@ export async function getSettingsByCategory(): Promise<{
   security: Setting[];
   downloads: Setting[];
 }> {
-  // Placeholder implementation
-  // Real implementation should:
-  // 1. Get all settings
-  // 2. Group by category based on key prefixes
-  // 3. Return categorized settings
-  return {
-    general: [],
-    email: [],
-    payment: [],
-    security: [],
-    downloads: []
-  };
+  try {
+    const allSettings = await getSettings();
+    
+    const categorizedSettings = {
+      general: [] as Setting[],
+      email: [] as Setting[],
+      payment: [] as Setting[],
+      security: [] as Setting[],
+      downloads: [] as Setting[]
+    };
+
+    allSettings.forEach(setting => {
+      const key = setting.key;
+      
+      if (key.startsWith('smtp_') || key.includes('email')) {
+        categorizedSettings.email.push(setting);
+      } else if (key.startsWith('stripe_') || key.includes('payment') || key === 'payment_gateway') {
+        categorizedSettings.payment.push(setting);
+      } else if (key.includes('registration') || key.includes('verification') || key === 'maintenance_mode') {
+        categorizedSettings.security.push(setting);
+      } else if (key.includes('download')) {
+        categorizedSettings.downloads.push(setting);
+      } else {
+        categorizedSettings.general.push(setting);
+      }
+    });
+
+    return categorizedSettings;
+  } catch (error) {
+    console.error('Failed to get settings by category:', error);
+    throw error;
+  }
 }
 
 /**
@@ -182,12 +253,19 @@ export async function getSettingsByCategory(): Promise<{
  * This handler exports all settings for backup purposes
  */
 export async function backupSettings(): Promise<string> {
-  // Placeholder implementation
-  // Real implementation should:
-  // 1. Get all settings
-  // 2. Export as JSON string
-  // 3. Return backup data
-  return '{}';
+  try {
+    const settings = await getSettings();
+    const backupData = settings.map(setting => ({
+      key: setting.key,
+      value: setting.value,
+      description: setting.description
+    }));
+    
+    return JSON.stringify(backupData, null, 2);
+  } catch (error) {
+    console.error('Failed to backup settings:', error);
+    throw error;
+  }
 }
 
 /**
@@ -195,14 +273,43 @@ export async function backupSettings(): Promise<string> {
  * This handler imports settings from backup data
  */
 export async function restoreSettings(backupData: string): Promise<{ success: boolean; error?: string }> {
-  // Placeholder implementation
-  // Real implementation should:
-  // 1. Parse backup JSON
-  // 2. Validate settings data
-  // 3. Update settings in database
-  // 4. Return restore result
-  return {
-    success: false,
-    error: 'Restore functionality not implemented'
-  };
+  try {
+    let parsedData: Array<{ key: string; value: string; description?: string | null }>;
+    
+    try {
+      parsedData = JSON.parse(backupData);
+    } catch (parseError) {
+      return {
+        success: false,
+        error: 'Invalid backup data format'
+      };
+    }
+
+    if (!Array.isArray(parsedData)) {
+      return {
+        success: false,
+        error: 'Backup data must be an array'
+      };
+    }
+
+    // Validate and restore settings
+    for (const settingData of parsedData) {
+      if (!settingData.key || !settingData.value) {
+        continue; // Skip invalid entries
+      }
+
+      await updateSetting({
+        key: settingData.key,
+        value: settingData.value
+      });
+    }
+
+    return { success: true };
+  } catch (error) {
+    console.error('Failed to restore settings:', error);
+    return {
+      success: false,
+      error: 'Failed to restore settings from backup'
+    };
+  }
 }

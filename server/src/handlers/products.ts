@@ -1,33 +1,52 @@
+import { db } from '../db';
+import { productsTable, categoriesTable } from '../db/schema';
 import { type CreateProductInput, type UpdateProductInput, type Product, type ProductFilters } from '../schema';
+import { eq } from 'drizzle-orm';
 
 /**
  * Handler for creating a new product
  * This handler creates a new digital product in the database
  */
 export async function createProduct(input: CreateProductInput): Promise<Product> {
-  // Placeholder implementation
-  // Real implementation should:
-  // 1. Validate input data
-  // 2. Check if category exists
-  // 3. Insert product into database
-  // 4. Return created product
-  return {
-    id: 1,
-    name: input.name,
-    description: input.description,
-    short_description: input.short_description,
-    price: input.price,
-    category_id: input.category_id,
-    image_url: input.image_url,
-    download_url: input.download_url,
-    file_size: input.file_size,
-    version: input.version,
-    license_type: input.license_type,
-    is_active: true,
-    stock_quantity: input.stock_quantity,
-    created_at: new Date(),
-    updated_at: new Date()
-  };
+  try {
+    // Check if category exists
+    const category = await db.select()
+      .from(categoriesTable)
+      .where(eq(categoriesTable.id, input.category_id))
+      .execute();
+
+    if (category.length === 0) {
+      throw new Error(`Category with id ${input.category_id} not found`);
+    }
+
+    // Insert product record
+    const result = await db.insert(productsTable)
+      .values({
+        name: input.name,
+        description: input.description,
+        short_description: input.short_description,
+        price: input.price.toString(), // Convert number to string for numeric column
+        category_id: input.category_id,
+        image_url: input.image_url,
+        download_url: input.download_url,
+        file_size: input.file_size,
+        version: input.version,
+        license_type: input.license_type,
+        stock_quantity: input.stock_quantity
+      })
+      .returning()
+      .execute();
+
+    // Convert numeric fields back to numbers before returning
+    const product = result[0];
+    return {
+      ...product,
+      price: parseFloat(product.price) // Convert string back to number
+    };
+  } catch (error) {
+    console.error('Product creation failed:', error);
+    throw error;
+  }
 }
 
 /**
